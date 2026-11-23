@@ -1,0 +1,11 @@
+# Configuration de diaporama-veille
+# À copier dans ~/.config/diaporama-veille.conf
+
+# Dossier des images (parcouru récursivement : jpg, jpeg, png, webp)
+DOSSIER=~/Images/wallpaper/
+
+# Inactivité avant le lancement du diaporama, en secondes
+DELAI_VEILLE=180
+
+# Durée d'affichage de chaque image, en secondes
+DUREE_IMAGE=15

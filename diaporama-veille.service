@@ -1,0 +1,12 @@
+[Unit]
+Description=Écran de veille diaporama
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/.local/bin/diaporama-veille surveiller
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target

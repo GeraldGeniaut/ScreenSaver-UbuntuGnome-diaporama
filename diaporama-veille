@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""
+diaporama-veille : écran de veille en diaporama pour GNOME (Wayland), multi-écran.
+  surveiller : tâche de fond, lance le diaporama après DELAI_VEILLE s d'inactivité
+  afficher   : affiche le diaporama sur tous les écrans ; toute activité verrouille
+"""
+import random, subprocess, sys, time
+from pathlib import Path
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gdk, Gio, GLib, Gtk
+
+CONF = Path.home() / ".config/diaporama-veille.conf"
+EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
+def lire_conf():
+    c = {"DOSSIER": "", "DELAI_VEILLE": "180", "DUREE_IMAGE": "15"}
+    if CONF.exists():
+        for ligne in CONF.read_text().splitlines():
+            ligne = ligne.strip()
+            if ligne and not ligne.startswith("#") and "=" in ligne:
+                k, v = ligne.split("=", 1)
+                c[k.strip()] = v.strip().strip('"')
+    return c
+
+def dbus(dest, chemin, iface, methode, args=None, retour=None):
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    r = bus.call_sync(dest, chemin, iface, methode, args,
+                      GLib.VariantType(retour) if retour else None,
+                      Gio.DBusCallFlags.NONE, 3000, None)
+    return r.unpack() if r is not None else None
+
+def inactivite_ms():
+    return dbus("org.gnome.Mutter.IdleMonitor", "/org/gnome/Mutter/IdleMonitor/Core",
+                "org.gnome.Mutter.IdleMonitor", "GetIdletime", None, "(t)")[0]
+
+def verrouille():
+    return dbus("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver",
+                "org.gnome.ScreenSaver", "GetActive", None, "(b)")[0]
+
+def veille_inhibee():
+    # 8 = une application (visio, vidéo) demande à GNOME de ne pas passer en veille
+    return dbus("org.gnome.SessionManager", "/org/gnome/SessionManager",
+                "org.gnome.SessionManager", "IsInhibited",
+                GLib.Variant("(u)", (8,)), "(b)")[0]
+
+def verrouiller():
+    try:
+        dbus("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver",
+             "org.gnome.ScreenSaver", "Lock")
+    except GLib.Error:
+        subprocess.run(["loginctl", "lock-session"])
+
+def surveiller():
+    seuil = int(lire_conf()["DELAI_VEILLE"]) * 1000
+    diapo = None
+    while True:
+        time.sleep(5)
+        if diapo is not None:
+            if diapo.poll() is None:
+                continue
+            if diapo.returncode != 0:      # pas d'image (montage absent...) : on patiente
+                print("Diaporama en échec, nouvel essai dans 5 min", file=sys.stderr, flush=True)
+                diapo = None
+                time.sleep(300)
+                continue
+            diapo = None
+        try:
+            if inactivite_ms() >= seuil and not verrouille() and not veille_inhibee():
+                diapo = subprocess.Popen([sys.executable, __file__, "afficher"])
+        except GLib.Error as e:
+            print(f"D-Bus : {e.message}", file=sys.stderr, flush=True)
+
+class Diaporama(Gtk.Application):
+    def __init__(self, images, duree):
+        super().__init__(application_id="local.DiaporamaVeille",
+                         flags=Gio.ApplicationFlags.NON_UNIQUE)
+        self.images, self.duree = images, duree
+        self.index, self.fini, self.pos, self.cadres = 0, False, {}, []
+
+    def do_activate(self):
+        css = Gtk.CssProvider()
+        css.load_from_string("window { background: black; }")
+        affichage = Gdk.Display.get_default()
+        Gtk.StyleContext.add_provider_for_display(
+            affichage, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        moniteurs = affichage.get_monitors()
+        for i in range(moniteurs.get_n_items()):      # une fenêtre par écran
+            win = Gtk.ApplicationWindow(application=self, title="Diaporama")
+            win.set_cursor(Gdk.Cursor.new_from_name("none", None))
+            image = Gtk.Picture(content_fit=Gtk.ContentFit.CONTAIN)
+            win.set_child(image)
+            self.brancher(win)
+            win.fullscreen_on_monitor(moniteurs.get_item(i))
+            win.present()
+            self.cadres.append(image)
+        self.debut = time.monotonic()
+        self.suivante()
+        GLib.timeout_add_seconds(self.duree, self.suivante)
+        GLib.timeout_add(250, self.controle)
+
+    def brancher(self, win):
+        clavier = Gtk.EventControllerKey()
+        clavier.connect("key-pressed", lambda *a: self.reveil() or True)
+        souris = Gtk.EventControllerMotion()
+        souris.connect("motion", self.mouvement)
+        clic = Gtk.GestureClick(button=0)
+        clic.connect("pressed", lambda *a: self.reveil())
+        molette = Gtk.EventControllerScroll(flags=Gtk.EventControllerScrollFlags.BOTH_AXES)
+        molette.connect("scroll", lambda *a: self.reveil() or True)
+        for ctl in (clavier, souris, clic, molette):
+            win.add_controller(ctl)
+
+    def suivante(self):
+        for image in self.cadres:                     # une image différente par écran
+            image.set_filename(str(self.images[self.index % len(self.images)]))
+            self.index += 1
+        return True
+
+    def mouvement(self, ctl, x, y):
+        depart = self.pos.get(ctl)
+        if depart is None:
+            self.pos[ctl] = (x, y)
+        elif abs(x - depart[0]) + abs(y - depart[1]) > 15:
+            self.reveil()
+
+    def controle(self):
+        if self.fini:
+            return False
+        try:
+            if verrouille():          # écran noir : GNOME a déjà verrouillé
+                self.fini = True
+                self.quit()
+                return False
+            if time.monotonic() - self.debut > 2 and inactivite_ms() < 1000:
+                self.reveil()         # activité interceptée par GNOME (Super, Alt+Tab…)
+        except GLib.Error:
+            pass
+        return True
+
+    def reveil(self):
+        if self.fini or time.monotonic() - self.debut < 1.5:
+            return
+        self.fini = True
+        verrouiller()
+        GLib.timeout_add(500, lambda: self.quit() or False)
+
+def afficher():
+    conf = lire_conf()
+    dossier = Path(conf["DOSSIER"]).expanduser()
+    try:
+        images = [p for p in dossier.rglob("*")
+                  if p.suffix.lower() in EXTENSIONS and p.is_file()]
+    except OSError as e:
+        sys.exit(f"Dossier inaccessible {dossier} : {e}")
+    if not images:
+        sys.exit(f"Aucune image dans {dossier}")
+    random.shuffle(images)
+    Diaporama(images, int(conf["DUREE_IMAGE"])).run([sys.argv[0]])
+
+if __name__ == "__main__":
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode == "surveiller":
+        surveiller()
+    elif mode == "afficher":
+        afficher()
+    else:
+        sys.exit("usage : diaporama-veille surveiller|afficher")
