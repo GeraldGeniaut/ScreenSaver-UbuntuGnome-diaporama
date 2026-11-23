@@ -74,7 +74,7 @@ sudo apt install python3-gi gir1.2-gtk-4.0
 Tout s'installe dans le compte de l'utilisateur, **sans droits root**.
 
 ```bash
-git clone https://github.com/<compte>/diaporama-veille.git
+git clone https://github.com/GeraldGeniaut/ScreenSaver-UbuntuGnome-diaporama.git
 cd diaporama-veille
 
 install -Dm755 diaporama-veille              ~/.local/bin/diaporama-veille
