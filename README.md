@@ -198,7 +198,7 @@ gsettings reset org.gnome.desktop.session idle-delay
 ## Arborescence du dépôt
 
 ```
-diaporama-veille/
+ScreenSaver-UbuntuGnome-diaporama/
 ├── README.md
 ├── diaporama-veille                 # script Python (modes surveiller / afficher)
 ├── diaporama-veille.conf.example    # configuration à copier dans ~/.config/
