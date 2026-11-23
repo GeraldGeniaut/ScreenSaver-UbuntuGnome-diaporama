@@ -207,4 +207,4 @@ ScreenSaver-UbuntuGnome-diaporama/
 
 ## Licence
 
-À définir.
+MIT
